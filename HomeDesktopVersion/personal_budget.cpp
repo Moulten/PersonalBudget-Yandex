@@ -3,6 +3,7 @@
 #include <sstream>
 #include <ctime>
 #include <map>
+#include <set>
 
 using namespace std;
 
@@ -37,7 +38,7 @@ public:
 	bool operator<(const Date& other) const{
 		return this->AsTimestamp() < other.AsTimestamp();
 	}
-	void operator++(){
+	Date& operator++(){
 		day_++;
 		if(day_ > days_in_month[month_]){
 			day_ = 1;
@@ -47,6 +48,20 @@ public:
 			month_ = 1;
 			year_++;
 		}
+		return *this;
+	}
+
+	Date& operator--(){
+		day_--;
+		if(day_ == 0){
+			month_--;
+			if(!month_ ){
+				month_ = 12;
+				year_--;
+			}
+			day_ = days_in_month[month_];
+		}
+		return *this;
 	}
 	string Print() const{
 		stringstream ss;
@@ -71,129 +86,132 @@ int ComputeDaysDiff(const Date& date_to, const Date& date_from) {
 //вторая дата хранит значение по умолчанию
 //в случае, если часть диапазона умножается на процент, то создается новый диапазон внутри старого
 template<typename K, typename V>
-class Intervals {
+class SetIntervals {
 public:
 	struct Interval{
 		K start;
 		K end;
 		V value;
+
+		Interval(const K& start, const K& end, V value) :
+			start(start), end(end), value(value){}
+
+	/*	bool operator<(const Interval& rhs) const {
+		      return start < rhs.start;
+		}*/
 	};
 
+private:
+	  struct Compare
+	  {
+	    using is_transparent = void;
+
+	    bool operator()(const Interval& lhs, const Interval& rhs) const {
+	      return lhs.start < rhs.start;
+	    }
+	    bool operator()(const K& lhs, const Interval& rhs) const {
+	      return lhs < rhs.start;
+	    }
+	    bool operator()(const Interval& lhs, const K& rhs) const {
+	      return lhs.start < rhs;
+	    }
+	  };
+
 public:
-	Intervals(V const& val)
+	SetIntervals(V const& val)
 	: m_valBegin(val)
 	{}
 
-	void assign( K const& keyBegin, K const& keyEnd, V const& val ) {
+	void assign(const K& keyBegin, const K& keyEnd, V const& val ) {
 		if(keyBegin < keyEnd){
-			auto left_bound = m_map.emplace(keyBegin,val);
-			auto left_iter = left_bound.first;
-			V right_value = left_bound.second ? m_valBegin : left_iter->second;
-			if(!left_bound.second ){
-				left_iter->second = val;
-			}
-			if (left_iter != m_map.begin()){
-				right_value = prev(left_iter)->second == m_valBegin ? m_valBegin : prev(left_iter)->second;
-				if (prev(left_iter)->second == val){
-					left_iter--;
-				}
-			}
-			auto right_bound = m_map.emplace(keyEnd,right_value);
-			auto right_iter = right_bound.first;
-			if(prev(right_iter) != left_iter){
-				right_iter->second = prev(right_iter)->second;
-				if(right_iter->second == val){
-					right_iter++;
-				}
-				m_map.erase(next(left_iter),right_iter);
-			}
-			if(next(right_iter) == m_map.end()){
-				right_iter->second = m_valBegin;
-			}
-		}
-	}
+			auto left_empl = i_set.emplace(Interval(keyBegin,keyEnd, val));
+			auto left_iter = left_empl.first;
+			// If keyBegin already exist
+			if(!left_empl.second){
+				auto old_value = i_set.extract(left_iter).value();
 
-	V const& operator[]( K const& key ) const {
-		auto it=m_map.upper_bound(key);
-		if(it==m_map.begin()) {
-			return m_valBegin;
-		} else {
-			return (--it)->second;
+				if(keyEnd < old_value.end){
+					K key_end = keyEnd;
+					i_set.insert(Interval(++key_end,old_value.end,old_value.value));
+				}
+				i_set.insert({keyBegin, keyEnd, val});
+			}
+			//Insertion into an exit section
+			else if(left_iter != i_set.begin() && keyBegin < prev(left_iter)->end){
+				Interval left_sec = i_set.extract(prev(left_iter)).value();
+				if(keyEnd < left_sec.end){
+					K key_end = keyEnd;
+					i_set.insert(Interval(++key_end,left_sec.end,left_sec.value));
+				}
+				K key_start = keyBegin;
+				i_set.insert(Interval(left_sec.start,--key_start,left_sec.value));
+			}
+			if(auto right_iter = i_set.upper_bound(keyEnd);
+				right_iter != i_set.begin() && keyEnd < prev(right_iter)->end){
+				//i_set.erase(left_iter,prev(right_iter));
+				Interval right_sec = i_set.extract(prev(right_iter)).value();
+				K key_end = keyEnd;
+				i_set.insert(Interval(++key_end,right_sec.end,right_sec.value));
+			}
 		}
+
 	}
 
 	size_t GetSize() const{
-		return m_map.size();
+		return i_set.size();
 	}
 	vector<Interval> GetIntervals(const K& left, const K& right) const{
-		if(m_map.empty()){
-			return {{left,right, m_valBegin}};
+		if(i_set.empty()){
+			return {Interval(left, right, m_valBegin)};
 		}
 		vector<Interval> interval;
-		auto begin_int = m_map.upper_bound(left);
-		auto end_int = m_map.upper_bound(right);
-		if(begin_int != m_map.begin()){
-			interval.push_back({left,min(begin_int->first,right),prev(begin_int)->second});
+		auto left_iter = i_set.upper_bound(left);
+		if(left_iter != i_set.begin() && left < prev(left_iter)->end){
+			interval.push_back({left,min(prev(left_iter)->end, right),prev(left_iter)->value});
 		}
-		for(; begin_int!= m_map.end() && next(begin_int) != end_int; begin_int++){
-			if(begin_int->second !=  m_valBegin)
-				interval.push_back({begin_int->first,next(begin_int)->first,begin_int->second});
-
+		for(; left_iter != i_set.end() && left_iter->start < right; left_iter++){
+			interval.push_back({left_iter->start, min(left_iter->end, right),left_iter->value});
 		}
-		if(begin_int->first < right){
-			interval.push_back({begin_int->first,right,begin_int->second});
-		}
+		/*if(left_iter != i_set.end() && right < left_iter->end){
+			interval.push_back({left_iter->start, right,left_iter->value});
+		}*/
 		return move(interval);
 	}
 
 private:
 	V m_valBegin;	//  значение по умолчанию
-	std::map<K,V> m_map;	// Сам контейнер
+	std::set<Interval,Compare> i_set;	// Сам контейнер
 };
 class PersonalBugetManager{
 public:
 	PersonalBugetManager() : intervals(0){}
 
-	float ComputeIncome(const Date& from, const Date& to) const{
+	double ComputeIncome(const Date& from, const Date& to) const{
 		cout<<"ComputeIncome"<<endl;
-		vector<Intervals<Date,double>::Interval> buffer = intervals.GetIntervals(from,to);
+		vector<SetIntervals<Date,double>::Interval> buffer = intervals.GetIntervals(from,to);
 		double sum = 0;
-		cout<<buffer.size()<<endl;
 		for(const auto& item: buffer){
-			cout<<item.start.Print()<<" - "<<item.end.Print()<<endl;
-			cout<<(2 + ComputeDaysDiff(item.end, item.start))<<" ";
-			cout<<item.value<<"- income"<<endl;
-			sum += item.value*(2 + ComputeDaysDiff(item.end, item.start));  // -1
+			sum += item.value*(1 + ComputeDaysDiff(item.end, item.start));  // -1
 		}
 		return sum;
 	}
 
 	void Earn(const Date& from, const Date& to, double value){
-		cout<<"Earn"<<endl;
-		vector<Intervals<Date,double>::Interval> buffer = intervals.GetIntervals(from,to);
-		double earned = value / (2 + ComputeDaysDiff(to, from));
-		cout<<"earned - "<< earned<<endl;
-		cout<<buffer.size()<<endl;
+		vector<SetIntervals<Date,double>::Interval> buffer = intervals.GetIntervals(from,to);
+		double earned = value / (1 + ComputeDaysDiff(to, from));
 		for(auto& item: buffer){
-			cout<<item.start.Print()<<" - "<<item.end.Print()<<endl;
-			//cout<<item.value<<"- income"<<endl;
 			intervals.assign(item.start, item.end, item.value + earned);
 		}
 	}
 
 	void PayTax(const Date& from, const Date& to){
-		cout<<"PayTax"<<endl;
-		vector<Intervals<Date,double>::Interval> buffer = intervals.GetIntervals(from,to);
-		cout<<buffer.size()<<endl;
+		vector<SetIntervals<Date,double>::Interval> buffer = intervals.GetIntervals(from,to);
 		for(auto& item: buffer){
-			cout<<item.start.Print()<<" - "<<item.end.Print()<<endl;
-			cout<<(2 + ComputeDaysDiff(item.end, item.start))<<" ";
-			cout<<item.value<<"- income"<<endl;
 			intervals.assign(item.start, item.end, item.value*TAX);
 		}
 	}
 private:
-	Intervals<Date, double> intervals;
+	SetIntervals<Date, double> intervals;
 	const double TAX = 0.87;
 };
 void TestDate();
@@ -206,7 +224,6 @@ int main(){
 	RUN_TEST(tr,TestDate);
 	RUN_TEST(tr,TestIntervals);
 	RUN_TEST(tr,SimpleTest);
-	//RUN_TEST(tr,SimpleTest);
 
 	return 0;
 }
@@ -238,145 +255,65 @@ void TestDate(){
 	++end_of_year;
 	std::tm end_of_year_next({0,0,0,1,0,120,0});
 	ASSERT_EQUAL(end_of_year.AsTimestamp(),mktime(&end_of_year_next));
+
+	ASSERT_EQUAL(ComputeDaysDiff(Date("2010-01-06"), Date("2010-01-02")), 4);
 }
 
-void TestOneCaseForIntervals(const Intervals<int,char>& int_map, const string& ans){
-	for(size_t i = 0; i < ans.length(); i++){
-		ASSERT_EQUAL(int_map[i], ans[i]);
+void CheckIntervalsInt(const vector<SetIntervals<int,char>::Interval>& buffer,
+		const vector<pair<int,char>>& answer){
+	for(size_t i = 0; i < buffer.size(); i++){
+		ASSERT_EQUAL((buffer[i].end - buffer[i].start), answer[i].first);
+		ASSERT_EQUAL(buffer[i].value, answer[i].second);
 	}
 }
+
 void TestIntervals(){
-	//Constuctor
-	{
-		Intervals<int, char> int_map('A');
-		string answer = "AAAAAAAAAA";
+	SetIntervals<int,char> i_set('A');
+	i_set.assign(2,6,'B');
+	i_set.assign(7,9,'C');
+	i_set.assign(1,1,'G');
+	vector<SetIntervals<int,char>::Interval> buffer = i_set.GetIntervals(0,10);
+	ASSERT_EQUAL(buffer.size(),3u);
 
-		TestOneCaseForIntervals(int_map, answer);
-	}
+	//check insertion in the midle of interval
+	i_set.assign(3,4,'X');
+	buffer = i_set.GetIntervals(0,10);
+	ASSERT_EQUAL(buffer.size(),5u);
+	vector<pair<int,char>> answer = {
+			{0,'G'}, {0,'B'}, {1,'X'}, {1,'B'}, {2,'C'},
+	};
+	CheckIntervalsInt(buffer, answer);
 
-	// X_left, X_right D_left, D_right
-	{
-		Intervals<int, char> int_map('A');
-		int_map.assign(2,6,'D');
-		int_map.assign(0,1,'X');
-		string answer = "XADDDDAAAA";
+	//check insertion of big interval
+	i_set.assign(0,10, 'P');
+	buffer = i_set.GetIntervals(0,10);
+	ASSERT_EQUAL(buffer.size(),1u);
 
-		TestOneCaseForIntervals(int_map, answer);
-	}
+	//check right assign
+	i_set.assign(8,12,'B');
+	answer = {{7,'P'}, {4,'B'}};
+	buffer = i_set.GetIntervals(0,15);
+	CheckIntervalsInt(buffer, answer);
 
-	//X_left, X_right D_left, D_right
-	{
-		Intervals<int, char> int_map('A');
-		int_map.assign(2,6,'D');
-		int_map.assign(6,8,'X');
-		string answer = "AADDDDXXAA";
-
-		TestOneCaseForIntervals(int_map, answer);
-	}
-
-	//X_left, X_right D_left, D_right
-	{
-		Intervals<int, char> int_map('A');
-		int_map.assign(2,6,'D');
-		int_map.assign(1,3,'X');
-		string answer = "AXXDDDAAAA";
-
-		TestOneCaseForIntervals(int_map, answer);
-	}
-	//X_left, X_right D_left, D_right
-
-	{
-		Intervals<int, char> int_map('A');
-		int_map.assign(2,6,'D');
-		int_map.assign(4,7,'X');
-		string answer = "AADDXXXAAA";
-
-		TestOneCaseForIntervals(int_map, answer);
-	}
-	//X_left, X_right D_left, D_right
-
-	{
-		Intervals<int, char> int_map('A');
-		int_map.assign(2,6,'D');
-		int_map.assign(0,2,'X');
-		string answer = "XXDDDDAAAA";
-
-		TestOneCaseForIntervals(int_map, answer);
-	}
-
-	//X_left, X_right D_left, D_right
-	{
-		Intervals<int, char> int_map('A');
-		int_map.assign(2,6,'D');
-		int_map.assign(5,8,'X');
-		string answer = "AADDDXXXAA";
-
-		TestOneCaseForIntervals(int_map, answer);
-	}
-
-	//X_left, X_right D_left, D_right
-	{
-		Intervals<int, char> int_map('A');
-		int_map.assign(2,6,'D');
-		int_map.assign(3,5,'X');
-		string answer = "AADXXDAAAA";
-
-		TestOneCaseForIntervals(int_map, answer);
-	}
-
-	//A secuence of assign-method
-	Intervals<int, char> int_map('A');
-	{
-		int_map.assign(1,3,'B');
-		int_map.assign(4,6,'C');
-		string answer = "ABBACCA";
-		TestOneCaseForIntervals(int_map, answer);
-	}
-	{
-		int_map.assign(2,6,'D');
-		string answer = "ABDDDDA";
-		TestOneCaseForIntervals(int_map, answer);
-	}
-	//Insert the same value in sub-interval
-	{
-		int_map.assign(3,5,'D');
-		string answer = "ABDDDDA";
-		TestOneCaseForIntervals(int_map, answer);
-		ASSERT_EQUAL(int_map.GetSize(),3u);
-
-		int_map.assign(3,5,'D');
-	}
-	{
-		Intervals<int,char> new_int_map('A');
-		new_int_map.assign(3,7,'D');
-		string answer = "AAADDDDA";
-		TestOneCaseForIntervals(new_int_map, answer);
-		ASSERT_EQUAL(new_int_map.GetSize(),2u);
-
-		int_map.assign(3,5,'D');
-	}
-
+	//check left assign
+	i_set.assign(-4,3,'B');
+	answer = {{7,'J'},{3,'P'}, {4,'B'}};
+	buffer = i_set.GetIntervals(-7,15);
+	CheckIntervalsInt(buffer, answer);
 
 }
 void SimpleTest(){
 	PersonalBugetManager pbm;
 	pbm.Earn(Date("2001-01-02"), Date("2001-01-06"), 20);
-
-
 	ASSERT_EQUAL(pbm.ComputeIncome(Date("2001-01-01"), Date("2002-01-01")),20);
-	//pbm.Earn(Date("2001-01-02"), Date("2001-01-06"), 10);
-	//ASSERT_EQUAL(pbm.ComputeIncome(Date("2001-01-01"), Date("2001-01-01")),30);
+
 	pbm.PayTax(Date("2001-01-02"), Date("2001-01-03"));
-
 	ASSERT_EQUAL(pbm.ComputeIncome(Date("2001-01-01"), Date("2002-01-01")),18.96);
-	/*pbm.Earn(Date("2001-01-03"), Date("2001-01-03"), 10);
 
-	ASSERT_EQUAL(pbm.ComputeIncome(Date("2001-01-01"), Date("2001-01-01")),28.96);
+	pbm.Earn(Date("2001-01-03"), Date("2001-01-03"), 10);
+	ASSERT_EQUAL(pbm.ComputeIncome(Date("2001-01-01"), Date("2002-01-01")),28.96);
+
 	pbm.PayTax(Date("2001-01-03"), Date("2001-01-03"));
-
-	ASSERT_EQUAL(pbm.ComputeIncome(Date("2001-01-01"), Date("2001-01-01")),27076);*/
+	ASSERT_EQUAL(pbm.ComputeIncome(Date("2001-01-01"), Date("2002-01-01")),27076);
 }
 
-void AdvanceTest(){
-
-}
